@@ -1,0 +1,45 @@
+name: BGMI Attack Bot
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Compile bgmi.c to binary
+      run: |
+        echo "🔧 Compiling bgmi.c..."
+        gcc -pthread -o bgmi bgmi.c
+        chmod +x bgmi
+        echo "✅ Compilation complete!"
+        file bgmi
+    
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+    
+    - name: Install Python dependencies
+      run: |
+        echo "📦 Installing dependencies..."
+        pip install python-telegram-bot==20.7
+        echo "✅ Dependencies installed!"
+    
+    - name: Create users file
+      run: |
+        echo "8422824412" > users.txt
+        echo "✅ Users file created!"
+        cat users.txt
+    
+    - name: Run the bot
+      run: |
+        echo "🤖 Starting BGMI Attack Bot..."
+        python Danger.py
+      timeout-minutes: 350
